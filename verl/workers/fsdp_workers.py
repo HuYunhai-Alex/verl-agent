@@ -130,10 +130,15 @@ class ActorRolloutRefWorker(Worker):
         self._is_lora = self._lora_rank > 0
 
         self.role = role
-        assert self.role in ["actor", "rollout", "ref", "actor_rollout", "actor_rollout_ref"]
+        # assert self.role in ["actor", "rollout", "ref", "actor_rollout", "actor_rollout_ref"]
 
-        self._is_actor = self.role in ["actor", "actor_rollout", "actor_rollout_ref"]
-        self._is_rollout = self.role in ["rollout", "actor_rollout", "actor_rollout_ref"]
+        if self.role in ["specialist_rollout", "radiologist_rollout"]:
+            # For specialist and radiologist, we use the same config as actor_rollout_ref
+            with open_dict(self.config):
+                self.config.model.path = self.config.specialist_model_path if self.role == "specialist_rollout" else self.config.radiologist_model_path
+
+        self._is_actor = self.role in ["actor", "actor_rollout", "actor_rollout_ref"] or "rollout" in self.role
+        self._is_rollout = self.role in ["rollout", "actor_rollout", "actor_rollout_ref"] or "rollout" in self.role
         self._is_ref = self.role in ["ref", "actor_rollout_ref"]
 
         self._is_offload_param = False
