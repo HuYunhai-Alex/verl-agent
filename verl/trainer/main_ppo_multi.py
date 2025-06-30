@@ -100,7 +100,7 @@ class TaskRunner:
         role_worker_mapping = {
             Role.ActorRollout: ray.remote(actor_rollout_cls),
             Role.DoctorSpecialist: ray.remote(actor_rollout_cls),
-            Role.DoctorInternist: ray.remote(actor_rollout_cls),
+            #Role.DoctorInternist: ray.remote(actor_rollout_cls),
             Role.DoctorRadiologist: ray.remote(actor_rollout_cls),
             #Role.DoctorAttending: ray.remote(actor_rollout_cls),
             Role.Critic: ray.remote(CriticWorker),
@@ -109,10 +109,10 @@ class TaskRunner:
         global_pool_id = "global_pool"
         
         resource_pool_spec = {
-            global_pool_id: [config.trainer.n_gpus_per_node-3] * config.trainer.nnodes,
+            global_pool_id: [1],
             "doctor_specialist": [1],
-            "doctor_internist": [1],
-            "doctor_radiologist": [1],
+            #"doctor_internist": [1],
+            #"doctor_radiologist": [1],
             #"doctor_attending": [1],
         }
         mapping = {
@@ -120,8 +120,9 @@ class TaskRunner:
             Role.Critic: global_pool_id,
             Role.RewardModel: global_pool_id,
             Role.DoctorSpecialist: "doctor_specialist",
-            Role.DoctorInternist: "doctor_internist",
-            Role.DoctorRadiologist: "doctor_radiologist",
+            Role.DoctorRadiologist: global_pool_id,
+            #Role.DoctorInternist: "doctor_internist",
+            #Role.DoctorRadiologist: "doctor_radiologist",
             #Role.DoctorAttending: "doctor_attending",
         }
 

@@ -26,15 +26,15 @@ data:
 actor_rollout_ref:
   hybrid_engine: True
   model:
-    specialist_model_path: microsoft/DialoGPT-medium  # Path to the specialist model, if any
-    internist_model_path: microsoft/DialoGPT-medium  # Path to the internist model, if any
-    radiologist_model_path: microsoft/DialoGPT-medium  # Path to the radiologist model, if any
-    attending_model_path: microsoft/DialoGPT-medium  # Path to the attending model, if any
+    specialist_model_path: /vast/yh5961/models/Qwen2.5-0.5B-Instruct  # Path to the specialist model, if any
+    internist_model_path: /vast/yh5961/models/Qwen2.5-0.5B-Instruct  # Path to the internist model, if any
+    radiologist_model_path: /vast/yh5961/models/Qwen2.5-0.5B-Instruct  # Path to the radiologist model, if any
+    attending_model_path: /vast/yh5961/models/Qwen2.5-0.5B-Instruct  # Path to the attending model, if any
     specialist_lora_path: null  # LoRA path for specialist model, if any
     internist_lora_path: null  # LoRA path for internist model, if any
     radiologist_lora_path: null  # LoRA path for radiologist model, if any
     attending_lora_path: null  # LoRA path for attending model, if anyS
-    path: microsoft/DialoGPT-medium
+    path: /vast/yh5961/models/Qwen2.5-0.5B-Instruct
     use_shm: False
     external_lib: null
     override_config: { }

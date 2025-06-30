@@ -738,8 +738,8 @@ class RayPPOTrainer:
             print(f"test_gen_batch meta info: {test_gen_batch.meta_info}")
 
             # # pad to be divisible by dp_size
-            # test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
-            # test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
+            # test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.radiologist_rollout_wg.world_size)
+            # test_output_gen_batch_padded = self.radiologist_rollout_wg.generate_sequences(test_gen_batch_padded)
 
             # # unpad
             # test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
@@ -747,7 +747,7 @@ class RayPPOTrainer:
             ################ agent-environment loop ###############
             test_output_gen_batch = self.traj_collector.multi_turn_loop(
                                                     gen_batch=test_gen_batch,
-                                                    actor_rollout_wg=self.actor_rollout_wg,
+                                                    actor_rollout_wg=self.radiologist_rollout_wg,
                                                     envs=self.val_envs,
                                                     is_train=False,
                                                     )
@@ -816,13 +816,13 @@ class RayPPOTrainer:
 
         # create actor and rollout
         if self.hybrid_engine:
-            resource_pool = self.resource_pool_manager.get_resource_pool(Role.ActorRollout)
-            actor_rollout_cls = RayClassWithInitArgs(
-                cls=self.role_worker_mapping[Role.ActorRollout],
-                config=self.config.actor_rollout_ref,
-                role="actor_rollout",
-            )
-            self.resource_pool_to_cls[resource_pool]["actor_rollout"] = actor_rollout_cls
+            # resource_pool = self.resource_pool_manager.get_resource_pool(Role.ActorRollout)
+            # actor_rollout_cls = RayClassWithInitArgs(
+            #     cls=self.role_worker_mapping[Role.ActorRollout],
+            #     config=self.config.actor_rollout_ref,
+            #     role="actor_rollout",
+            # )
+            # self.resource_pool_to_cls[resource_pool]["actor_rollout"] = actor_rollout_cls
 
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.DoctorSpecialist)
             specialist_rollout_cls = RayClassWithInitArgs(
@@ -891,14 +891,14 @@ class RayPPOTrainer:
             self.rm_wg.init_model()
 
         # we should create rollout at the end so that vllm can have a better estimation of kv cache memory
-        self.actor_rollout_wg = all_wg["actor_rollout"]
-        self.actor_rollout_wg.init_model()
+        self.radiologist_rollout_wg = all_wg["radiologist_rollout"]
+        self.radiologist_rollout_wg.init_model()
 
         self.specialist_rollout_wg = all_wg["specialist_rollout"]
         self.specialist_rollout_wg.init_model()
 
-        self.radiologist_rollout_wg = all_wg["radiologist_rollout"]
-        self.radiologist_rollout_wg.init_model()
+        # self.radiologist_rollout_wg = all_wg["radiologist_rollout"]
+        # self.radiologist_rollout_wg.init_model()
 
         # create async rollout manager and request scheduler
         self.async_rollout_mode = False
@@ -906,7 +906,7 @@ class RayPPOTrainer:
             self.async_rollout_mode = True
             self.async_rollout_manager = AsyncLLMServerManager(
                 config=self.config.actor_rollout_ref,
-                worker_group=self.actor_rollout_wg,
+                worker_group=self.radiologist_rollout_wg,
             )
 
     def _save_checkpoint(self):
@@ -924,7 +924,8 @@ class RayPPOTrainer:
         max_actor_ckpt_to_keep = self.config.trainer.get("max_actor_ckpt_to_keep", None) if not remove_previous_ckpt_in_save else 1
         max_critic_ckpt_to_keep = self.config.trainer.get("max_critic_ckpt_to_keep", None) if not remove_previous_ckpt_in_save else 1
 
-        self.actor_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep)
+        self.radiologist_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep)
+        self.specialist_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep)
 
         if self.use_critic:
             critic_local_path = os.path.join(local_global_step_folder, "critic")
@@ -978,7 +979,8 @@ class RayPPOTrainer:
         actor_path = os.path.join(global_step_folder, "actor")
         critic_path = os.path.join(global_step_folder, "critic")
         # load actor
-        self.actor_rollout_wg.load_checkpoint(actor_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
+        self.radiologist_rollout_wg.load_checkpoint(actor_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
+        self.specialist_rollout_wg.load_checkpoint(actor_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
         # load critic
         if self.use_critic:
             self.critic_wg.load_checkpoint(critic_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
@@ -997,7 +999,7 @@ class RayPPOTrainer:
         attention_mask = batch.batch["attention_mask"]
         batch_size = attention_mask.shape[0]
         global_seqlen_lst = batch.batch["attention_mask"].view(batch_size, -1).sum(-1).tolist()  # (train_batch_size,)
-        world_size = self.actor_rollout_wg.world_size
+        world_size = self.radiologist_rollout_wg.world_size
         global_partition_lst = get_seqlen_balanced_partitions(global_seqlen_lst, k_partitions=world_size, equal_size=True)
         # reorder based on index. The data will be automatically equally partitioned by dispatch function
         global_idx = torch.tensor([j for partition in global_partition_lst for j in partition])
@@ -1071,7 +1073,7 @@ class RayPPOTrainer:
                     # generate a batch
                     with _timer("gen", timing_raw):
                         # if not self.async_rollout_mode:
-                        #     gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
+                        #     gen_batch_output = self.radiologist_rollout_wg.generate_sequences(gen_batch)
                         # else:
                         #     self.async_rollout_manager.wake_up()
                         #     gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch)
@@ -1080,7 +1082,7 @@ class RayPPOTrainer:
                         ################ agent-environment loop ###############
                         gen_batch_output = self.traj_collector.multi_turn_loop(
                                                                 gen_batch=gen_batch,
-                                                                actor_rollout_wg=self.actor_rollout_wg,
+                                                                actor_rollout_wg=self.radiologist_rollout_wg,
                                                                 envs=self.envs,
                                                                 is_train=True,
                                                                 )
@@ -1088,7 +1090,7 @@ class RayPPOTrainer:
                         with _timer("gen_max", timing_raw):
                             gen_baseline_batch = deepcopy(gen_batch)
                             gen_baseline_batch.meta_info["do_sample"] = False
-                            gen_baseline_output = self.actor_rollout_wg.generate_sequences(gen_baseline_batch)
+                            gen_baseline_output = self.radiologist_rollout_wg.generate_sequences(gen_baseline_batch)
 
                             batch = batch.union(gen_baseline_output)
                             reward_baseline_tensor = self.reward_fn(batch)
@@ -1139,7 +1141,7 @@ class RayPPOTrainer:
 
                     # recompute old_log_probs
                     with _timer("old_log_prob", timing_raw):
-                        old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
+                        old_log_prob = self.radiologist_rollout_wg.compute_log_prob(batch)
                         entropys = old_log_prob.batch["entropys"]
                         response_masks = batch.batch["response_mask"]
                         loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
@@ -1179,7 +1181,7 @@ class RayPPOTrainer:
                             if not self.ref_in_actor:
                                 ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
                             else:
-                                ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
+                                ref_log_prob = self.radiologist_rollout_wg.compute_ref_log_prob(batch)
                             batch = batch.union(ref_log_prob)
 
                     # compute values
@@ -1244,15 +1246,15 @@ class RayPPOTrainer:
                         # update actor
                         with _timer("update_actor", timing_raw):
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
-                            actor_output = self.actor_rollout_wg.update_actor(batch)
+                            actor_output = self.radiologist_rollout_wg.update_actor(batch)
                             specialist_output = self.specialist_rollout_wg.update_actor(batch)
-                            radiologist_output = self.radiologist_rollout_wg.update_actor(batch)
+                            #radiologist_output = self.radiologist_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         specialist_output_metrics = reduce_metrics(specialist_output.meta_info["metrics"])
-                        radiologist_output_metrics = reduce_metrics(radiologist_output.meta_info["metrics"])
+                        #radiologist_output_metrics = reduce_metrics(radiologist_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
                         metrics.update(specialist_output_metrics)
-                        metrics.update(radiologist_output_metrics)
+                        #metrics.update(radiologist_output_metrics)
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
