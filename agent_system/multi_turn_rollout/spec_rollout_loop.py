@@ -477,7 +477,7 @@ class TrajectoryCollector:
             total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid = \
                 self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
-                actor_rollout_wg=actor_rollout_wg,
+                actor_rollout_wg=actor_rollout_wg["draft"],
                 envs=envs,
             )
         assert len(total_batch_list) == len(total_episode_rewards)
