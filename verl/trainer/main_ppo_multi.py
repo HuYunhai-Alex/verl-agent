@@ -23,6 +23,283 @@ import ray
 from verl.trainer.ppo.ray_trainer_multi import RayPPOTrainer
 from verl.trainer.ppo.reward import load_reward_manager
 
+import verl.utils.torch_functional as verl_F
+from verl.utils.model import compute_position_id_with_mask
+
+
+class MedicalConsultationDataset:
+    """Medical consultation dataset"""
+    
+    def __init__(self, data_path: str = None, tokenizer=None):
+        self.tokenizer = tokenizer
+        
+        # Sample medical case data
+        self.medical_cases = [
+            {
+                "case_id": "case_001",
+                "patient_info": "65-year-old male presenting with chest pain for 3 hours",
+                "symptoms": "Substernal crushing chest pain radiating to left arm, with sweating and nausea",
+                "vital_signs": "BP: 160/95 mmHg, HR: 110 bpm, RR: 22/min, T: 37.2°C",
+                "history": "Hypertension for 10 years, smoking history for 30 years",
+                "physical_exam": "Rapid heart rate, irregular rhythm, clear lung sounds bilaterally",
+                "lab_results": "Elevated troponin I, elevated CK-MB",
+                "imaging": "ECG shows ST elevation in leads II, III, aVF",
+                "prompt": "Please provide your medical opinion on this case and recommend next steps.",
+            },
+            {
+                "case_id": "case_002",
+                "patient_info": "45-year-old female with persistent cough for 2 weeks",
+                "symptoms": "Dry cough, fever, fatigue, shortness of breath",
+                "vital_signs": "BP: 120/80 mmHg, HR: 95 bpm, RR: 24/min, T: 38.5°C",
+                "history": "No significant past medical history, non-smoker",
+                "physical_exam": "Decreased breath sounds in right lower lobe, dullness to percussion",
+                "lab_results": "Elevated white blood cell count, increased CRP",
+                "imaging": "Chest X-ray shows right lower lobe consolidation",
+                "prompt": "What is your differential diagnosis and treatment plan?",
+            },
+            {
+                "case_id": "case_003",
+                "patient_info": "72-year-old male with sudden onset severe headache",
+                "symptoms": "Worst headache of life, photophobia, neck stiffness",
+                "vital_signs": "BP: 180/110 mmHg, HR: 85 bpm, RR: 18/min, T: 37.0°C",
+                "history": "Hypertension, diabetes mellitus type 2",
+                "physical_exam": "Nuchal rigidity, Kernig's sign positive",
+                "lab_results": "Normal CBC, glucose elevated",
+                "imaging": "CT head shows subarachnoid hemorrhage",
+                "prompt": "Please evaluate this neurological emergency and suggest management.",
+            },
+            {
+                "case_id": "case_004",
+                "patient_info": "28-year-old pregnant woman at 32 weeks gestation with abdominal pain",
+                "symptoms": "Right upper quadrant pain, nausea, vomiting",
+                "vital_signs": "BP: 150/95 mmHg, HR: 100 bpm, RR: 20/min, T: 37.5°C",
+                "history": "First pregnancy, no complications until now",
+                "physical_exam": "RUQ tenderness, mild peripheral edema",
+                "lab_results": "Elevated liver enzymes, proteinuria",
+                "imaging": "Ultrasound shows normal fetal development",
+                "prompt": "What are your concerns and recommendations for this pregnant patient?",
+            },
+                        {
+                "case_id": "case_005",
+                "patient_info": "65-year-old male presenting with chest pain for 3 hours",
+                "symptoms": "Substernal crushing chest pain radiating to left arm, with sweating and nausea",
+                "vital_signs": "BP: 160/95 mmHg, HR: 110 bpm, RR: 22/min, T: 37.2°C",
+                "history": "Hypertension for 10 years, smoking history for 30 years",
+                "physical_exam": "Rapid heart rate, irregular rhythm, clear lung sounds bilaterally",
+                "lab_results": "Elevated troponin I, elevated CK-MB",
+                "imaging": "ECG shows ST elevation in leads II, III, aVF",
+                "prompt": "Please provide your medical opinion on this case and recommend next steps.",
+            },
+            {
+                "case_id": "case_006",
+                "patient_info": "45-year-old female with persistent cough for 2 weeks",
+                "symptoms": "Dry cough, fever, fatigue, shortness of breath",
+                "vital_signs": "BP: 120/80 mmHg, HR: 95 bpm, RR: 24/min, T: 38.5°C",
+                "history": "No significant past medical history, non-smoker",
+                "physical_exam": "Decreased breath sounds in right lower lobe, dullness to percussion",
+                "lab_results": "Elevated white blood cell count, increased CRP",
+                "imaging": "Chest X-ray shows right lower lobe consolidation",
+                "prompt": "What is your differential diagnosis and treatment plan?",
+            },
+            {
+                "case_id": "case_007",
+                "patient_info": "72-year-old male with sudden onset severe headache",
+                "symptoms": "Worst headache of life, photophobia, neck stiffness",
+                "vital_signs": "BP: 180/110 mmHg, HR: 85 bpm, RR: 18/min, T: 37.0°C",
+                "history": "Hypertension, diabetes mellitus type 2",
+                "physical_exam": "Nuchal rigidity, Kernig's sign positive",
+                "lab_results": "Normal CBC, glucose elevated",
+                "imaging": "CT head shows subarachnoid hemorrhage",
+                "prompt": "Please evaluate this neurological emergency and suggest management.",
+            },
+            {
+                "case_id": "case_008",
+                "patient_info": "28-year-old pregnant woman at 32 weeks gestation with abdominal pain",
+                "symptoms": "Right upper quadrant pain, nausea, vomiting",
+                "vital_signs": "BP: 150/95 mmHg, HR: 100 bpm, RR: 20/min, T: 37.5°C",
+                "history": "First pregnancy, no complications until now",
+                "physical_exam": "RUQ tenderness, mild peripheral edema",
+                "lab_results": "Elevated liver enzymes, proteinuria",
+                "imaging": "Ultrasound shows normal fetal development",
+                "prompt": "What are your concerns and recommendations for this pregnant patient?",
+            },
+                        {
+                "case_id": "case_009",
+                "patient_info": "65-year-old male presenting with chest pain for 3 hours",
+                "symptoms": "Substernal crushing chest pain radiating to left arm, with sweating and nausea",
+                "vital_signs": "BP: 160/95 mmHg, HR: 110 bpm, RR: 22/min, T: 37.2°C",
+                "history": "Hypertension for 10 years, smoking history for 30 years",
+                "physical_exam": "Rapid heart rate, irregular rhythm, clear lung sounds bilaterally",
+                "lab_results": "Elevated troponin I, elevated CK-MB",
+                "imaging": "ECG shows ST elevation in leads II, III, aVF",
+                "prompt": "Please provide your medical opinion on this case and recommend next steps.",
+            },
+            {
+                "case_id": "case_010",
+                "patient_info": "45-year-old female with persistent cough for 2 weeks",
+                "symptoms": "Dry cough, fever, fatigue, shortness of breath",
+                "vital_signs": "BP: 120/80 mmHg, HR: 95 bpm, RR: 24/min, T: 38.5°C",
+                "history": "No significant past medical history, non-smoker",
+                "physical_exam": "Decreased breath sounds in right lower lobe, dullness to percussion",
+                "lab_results": "Elevated white blood cell count, increased CRP",
+                "imaging": "Chest X-ray shows right lower lobe consolidation",
+                "prompt": "What is your differential diagnosis and treatment plan?",
+            },
+            {
+                "case_id": "case_011",
+                "patient_info": "72-year-old male with sudden onset severe headache",
+                "symptoms": "Worst headache of life, photophobia, neck stiffness",
+                "vital_signs": "BP: 180/110 mmHg, HR: 85 bpm, RR: 18/min, T: 37.0°C",
+                "history": "Hypertension, diabetes mellitus type 2",
+                "physical_exam": "Nuchal rigidity, Kernig's sign positive",
+                "lab_results": "Normal CBC, glucose elevated",
+                "imaging": "CT head shows subarachnoid hemorrhage",
+                "prompt": "Please evaluate this neurological emergency and suggest management.",
+            },
+            {
+                "case_id": "case_012",
+                "patient_info": "28-year-old pregnant woman at 32 weeks gestation with abdominal pain",
+                "symptoms": "Right upper quadrant pain, nausea, vomiting",
+                "vital_signs": "BP: 150/95 mmHg, HR: 100 bpm, RR: 20/min, T: 37.5°C",
+                "history": "First pregnancy, no complications until now",
+                "physical_exam": "RUQ tenderness, mild peripheral edema",
+                "lab_results": "Elevated liver enzymes, proteinuria",
+                "imaging": "Ultrasound shows normal fetal development",
+                "prompt": "What are your concerns and recommendations for this pregnant patient?",
+            },
+                        {
+                "case_id": "case_013",
+                "patient_info": "65-year-old male presenting with chest pain for 3 hours",
+                "symptoms": "Substernal crushing chest pain radiating to left arm, with sweating and nausea",
+                "vital_signs": "BP: 160/95 mmHg, HR: 110 bpm, RR: 22/min, T: 37.2°C",
+                "history": "Hypertension for 10 years, smoking history for 30 years",
+                "physical_exam": "Rapid heart rate, irregular rhythm, clear lung sounds bilaterally",
+                "lab_results": "Elevated troponin I, elevated CK-MB",
+                "imaging": "ECG shows ST elevation in leads II, III, aVF",
+                "prompt": "Please provide your medical opinion on this case and recommend next steps.",
+            },
+            {
+                "case_id": "case_014",
+                "patient_info": "45-year-old female with persistent cough for 2 weeks",
+                "symptoms": "Dry cough, fever, fatigue, shortness of breath",
+                "vital_signs": "BP: 120/80 mmHg, HR: 95 bpm, RR: 24/min, T: 38.5°C",
+                "history": "No significant past medical history, non-smoker",
+                "physical_exam": "Decreased breath sounds in right lower lobe, dullness to percussion",
+                "lab_results": "Elevated white blood cell count, increased CRP",
+                "imaging": "Chest X-ray shows right lower lobe consolidation",
+                "prompt": "What is your differential diagnosis and treatment plan?",
+            },
+            {
+                "case_id": "case_015",
+                "patient_info": "72-year-old male with sudden onset severe headache",
+                "symptoms": "Worst headache of life, photophobia, neck stiffness",
+                "vital_signs": "BP: 180/110 mmHg, HR: 85 bpm, RR: 18/min, T: 37.0°C",
+                "history": "Hypertension, diabetes mellitus type 2",
+                "physical_exam": "Nuchal rigidity, Kernig's sign positive",
+                "lab_results": "Normal CBC, glucose elevated",
+                "imaging": "CT head shows subarachnoid hemorrhage",
+                "prompt": "Please evaluate this neurological emergency and suggest management.",
+            },
+            {
+                "case_id": "case_016",
+                "patient_info": "28-year-old pregnant woman at 32 weeks gestation with abdominal pain",
+                "symptoms": "Right upper quadrant pain, nausea, vomiting",
+                "vital_signs": "BP: 150/95 mmHg, HR: 100 bpm, RR: 20/min, T: 37.5°C",
+                "history": "First pregnancy, no complications until now",
+                "physical_exam": "RUQ tenderness, mild peripheral edema",
+                "lab_results": "Elevated liver enzymes, proteinuria",
+                "imaging": "Ultrasound shows normal fetal development",
+                "prompt": "What are your concerns and recommendations for this pregnant patient?",
+            },
+        ]
+        
+        self.max_prompt_length = 1024
+        self.return_raw_chat = False
+        self.return_full_prompt = False
+        self.truncation = "error"
+        self.filter_overlong_prompts = True
+    
+    def __len__(self):
+        return len(self.medical_cases)
+    
+    def __getitem__(self, idx):
+        case = self.medical_cases[idx]
+        row_dict: dict = {}
+        
+        # Format the medical case into a prompt
+        prompt_parts = [
+            f"Patient Information: {case['patient_info']}",
+            f"Symptoms: {case['symptoms']}",
+            f"Vital Signs: {case['vital_signs']}",
+            f"Medical History: {case['history']}",
+            f"Physical Examination: {case['physical_exam']}",
+            f"Laboratory Results: {case['lab_results']}",
+        ]
+        
+        if 'imaging' in case:
+            prompt_parts.append(f"Imaging: {case['imaging']}")
+        
+        prompt_parts.append(f"Question: {case['prompt']}")
+        
+        full_prompt = "\n\n".join(prompt_parts)
+        
+        raw_prompt = self.tokenizer.apply_chat_template(full_prompt, add_generation_prompt=True, tokenize=False)
+        model_inputs = self.tokenizer(raw_prompt, return_tensors="pt", add_special_tokens=False)
+        input_ids = model_inputs.pop("input_ids")
+        attention_mask = model_inputs.pop("attention_mask")
+
+        input_ids, attention_mask = verl_F.postprocess_data(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_length=self.max_prompt_length,
+            pad_token_id=self.tokenizer.pad_token_id,
+            left_pad=True,
+            truncation=self.truncation,
+        )
+
+        position_ids = compute_position_id_with_mask(attention_mask)
+
+        row_dict["input_ids"] = input_ids[0]
+        row_dict["attention_mask"] = attention_mask[0]
+        row_dict["position_ids"] = position_ids[0]
+
+        raw_prompt_ids = self.tokenizer.encode(raw_prompt, add_special_tokens=False)
+        if len(raw_prompt_ids) > self.max_prompt_length:
+            if self.truncation == "left":
+                raw_prompt_ids = raw_prompt_ids[-self.max_prompt_length :]
+            elif self.truncation == "right":
+                raw_prompt_ids = raw_prompt_ids[: self.max_prompt_length]
+            elif self.truncation == "middle":
+                left_half = self.max_prompt_length // 2
+                right_half = self.max_prompt_length - left_half
+                raw_prompt_ids = raw_prompt_ids[:left_half] + raw_prompt_ids[-right_half:]
+            elif self.truncation == "error":
+                raise RuntimeError(f"Prompt length {len(raw_prompt_ids)} is longer than {self.max_prompt_length}.")
+
+        row_dict["raw_prompt_ids"] = raw_prompt_ids
+        # encode prompts without chat template
+        if self.return_raw_chat:
+            row_dict["raw_prompt"] = full_prompt
+
+        # get prompts with chat template
+        if self.return_full_prompt:
+            row_dict["full_prompts"] = raw_prompt  # array of strings
+
+        row_dict["case_id"] = case["case_id"]
+        row_dict["data_source"] = "medical_consultation"
+        row_dict["prompt"] = raw_prompt
+        row_dict["raw_prompt"] = full_prompt
+        
+        return row_dict
+
+def collate_fn(batch):
+    """Collate function for batch processing"""
+    return {
+        "case_id": [item["case_id"] for item in batch],
+        "prompt": [item["prompt"] for item in batch],
+        "raw_prompt": [item["raw_prompt"] for item in batch],
+        "data_source": [item["data_source"] for item in batch],
+    }
 
 @hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
 def main(config):
@@ -57,8 +334,9 @@ class TaskRunner:
         # download the checkpoint from hdfs
         local_path = copy_to_local(config.actor_rollout_ref.model.path, use_shm=config.actor_rollout_ref.model.get("use_shm", False))
 
-        from agent_system.environments import make_envs
-        envs, val_envs = make_envs(config)
+        # from agent_system.environments import make_envs
+        # envs, val_envs = make_envs(config)
+        envs, val_envs = None, None 
 
         # instantiate tokenizer
         from verl.utils import hf_processor, hf_tokenizer
@@ -163,17 +441,22 @@ class TaskRunner:
 
         assert config.actor_rollout_ref.rollout.n == 1, "In verl, actor_rollout_ref.rollout.n>1 is for GRPO. In verl+env, we keep n=1, and achieve GRPO by env.rollout.n"
 
-        from agent_system.multi_turn_rollout import TrajectoryCollector
-        traj_collector = TrajectoryCollector(config=config, tokenizer=tokenizer, processor=processor)
+        # from agent_system.multi_turn_rollout import TrajectoryCollector
+        # traj_collector = TrajectoryCollector(config=config, tokenizer=tokenizer, processor=processor)
 
-        # from agent_system.multi_turn_rollout.medical_consultation_rollout import MedicalConsultationCollector
-        # traj_collector = MedicalConsultationCollector(config=config, tokenizer=tokenizer)
+        from agent_system.multi_turn_rollout.medical_consultation_rollout import MedicalConsultationCollector
+        traj_collector = MedicalConsultationCollector(tokenizer=tokenizer)
 
         from verl.utils.dataset.rl_dataset import collate_fn
 
-        train_dataset = create_rl_dataset(config.data.train_files, config.data, tokenizer, processor)
-        val_dataset = create_rl_dataset(config.data.val_files, config.data, tokenizer, processor)
+        # train_dataset = create_rl_dataset(config.data.train_files, config.data, tokenizer, processor)
+        # val_dataset = create_rl_dataset(config.data.val_files, config.data, tokenizer, processor)
+        # train_sampler = create_rl_sampler(config.data, train_dataset)
+        
+        train_dataset = MedicalConsultationDataset(tokenizer=tokenizer)
+        val_dataset = MedicalConsultationDataset(tokenizer=tokenizer)
         train_sampler = create_rl_sampler(config.data, train_dataset)
+        
         trainer = RayPPOTrainer(
             config=config,
             tokenizer=tokenizer,

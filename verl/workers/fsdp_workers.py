@@ -135,8 +135,13 @@ class ActorRolloutRefWorker(Worker):
         if self.role in ["specialist_rollout", "radiologist_rollout"]:
             # For specialist and radiologist, we use the same config as actor_rollout_ref
             with open_dict(self.config):
-                self.config.model.path = self.config.specialist_model_path if self.role == "specialist_rollout" else self.config.radiologist_model_path
+                self.config.model.path = self.config.model.specialist_model_path if self.role == "specialist_rollout" else self.config.model.radiologist_model_path
 
+        if self.role in ["draft_rollout", "target_rollout"]:
+            # For specialist and radiologist, we use the same config as actor_rollout_ref
+            with open_dict(self.config):
+                self.config.model.path = self.config.model.draft_model_path if self.role == "draft_rollout" else self.config.model.target_model_path
+        
         self._is_actor = self.role in ["actor", "actor_rollout", "actor_rollout_ref"] or "rollout" in self.role
         self._is_rollout = self.role in ["rollout", "actor_rollout", "actor_rollout_ref"] or "rollout" in self.role
         self._is_ref = self.role in ["ref", "actor_rollout_ref"]

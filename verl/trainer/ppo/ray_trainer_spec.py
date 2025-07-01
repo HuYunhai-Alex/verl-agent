@@ -80,11 +80,7 @@ class Role(Enum):
     RefPolicy = 4
     RewardModel = 5
     ActorRolloutRef = 6
-    DoctorSpecialist = 7 
-    DoctorInternist = 8  
-    DoctorRadiologist = 9
-    DoctorAttending = 10 
-
+    TargetRollout = 7
 
 
 class AdvantageEstimator(str, Enum):
@@ -784,7 +780,7 @@ class RayPPOTrainer:
             ################ agent-environment loop ###############
             test_output_gen_batch = self.traj_collector.multi_turn_loop(
                                                     gen_batch=test_gen_batch,
-                                                    doctor_worker_groups={DoctorRole.RADIOLOGIST: self.radiologist_rollout_wg, DoctorRole.SPECIALIST: self.specialist_rollout_wg},
+                                                    actor_rollout_wg={"draft": self.draft_rollout_wg, "target": self.target_rollout_wg},
                                                     envs=self.val_envs,
                                                     is_train=False,
                                                     )
@@ -861,21 +857,21 @@ class RayPPOTrainer:
             # )
             # self.resource_pool_to_cls[resource_pool]["actor_rollout"] = actor_rollout_cls
 
-            resource_pool = self.resource_pool_manager.get_resource_pool(Role.DoctorSpecialist)
-            specialist_rollout_cls = RayClassWithInitArgs(
-                cls=self.role_worker_mapping[Role.DoctorSpecialist],
+            resource_pool = self.resource_pool_manager.get_resource_pool(Role.ActorRollout)
+            draft_rollout_cls = RayClassWithInitArgs(
+                cls=self.role_worker_mapping[Role.ActorRollout],
                 config=self.config.actor_rollout_ref,
-                role="specialist_rollout",
+                role="draft_rollout",
             )
-            self.resource_pool_to_cls[resource_pool]["specialist_rollout"] = specialist_rollout_cls
+            self.resource_pool_to_cls[resource_pool]["draft_rollout"] = draft_rollout_cls
 
-            resource_pool = self.resource_pool_manager.get_resource_pool(Role.DoctorRadiologist)
-            radiologist_rollout_cls = RayClassWithInitArgs(
-                cls=self.role_worker_mapping[Role.DoctorRadiologist],
+            resource_pool = self.resource_pool_manager.get_resource_pool(Role.TargetRollout)
+            target_rollout_cls = RayClassWithInitArgs(
+                cls=self.role_worker_mapping[Role.TargetRollout],
                 config=self.config.actor_rollout_ref,
-                role="radiologist_rollout",
+                role="target_rollout",
             )
-            self.resource_pool_to_cls[resource_pool]["radiologist_rollout"] = radiologist_rollout_cls
+            self.resource_pool_to_cls[resource_pool]["target_rollout"] = target_rollout_cls
 
         else:
             raise NotImplementedError
@@ -928,11 +924,11 @@ class RayPPOTrainer:
             self.rm_wg.init_model()
 
         # we should create rollout at the end so that vllm can have a better estimation of kv cache memory
-        self.radiologist_rollout_wg = all_wg["radiologist_rollout"]
-        self.radiologist_rollout_wg.init_model()
+        self.target_rollout_wg = all_wg["target_rollout"]
+        self.target_rollout_wg.init_model()
 
-        self.specialist_rollout_wg = all_wg["specialist_rollout"]
-        self.specialist_rollout_wg.init_model()
+        self.draft_rollout_wg = all_wg["draft_rollout"]
+        self.draft_rollout_wg.init_model()
 
         # self.radiologist_rollout_wg = all_wg["radiologist_rollout"]
         # self.radiologist_rollout_wg.init_model()
@@ -963,8 +959,8 @@ class RayPPOTrainer:
         max_actor_ckpt_to_keep = self.config.trainer.get("max_actor_ckpt_to_keep", None) if not remove_previous_ckpt_in_save else 1
         max_critic_ckpt_to_keep = self.config.trainer.get("max_critic_ckpt_to_keep", None) if not remove_previous_ckpt_in_save else 1
 
-        self.radiologist_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep)
-        self.specialist_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep)
+        self.target_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep)
+        self.draft_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep)
 
         if self.use_critic:
             critic_local_path = os.path.join(local_global_step_folder, "critic")
@@ -1018,8 +1014,8 @@ class RayPPOTrainer:
         actor_path = os.path.join(global_step_folder, "actor")
         critic_path = os.path.join(global_step_folder, "critic")
         # load actor
-        self.radiologist_rollout_wg.load_checkpoint(actor_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
-        self.specialist_rollout_wg.load_checkpoint(actor_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
+        self.target_rollout_wg.load_checkpoint(actor_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
+        self.draft_rollout_wg.load_checkpoint(actor_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
         # load critic
         if self.use_critic:
             self.critic_wg.load_checkpoint(critic_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
@@ -1123,7 +1119,7 @@ class RayPPOTrainer:
                         ################ agent-environment loop ###############
                         gen_batch_output = self.traj_collector.multi_turn_loop(
                                                                 gen_batch=gen_batch,
-                                                                doctor_worker_groups={DoctorRole.RADIOLOGIST: self.radiologist_rollout_wg, DoctorRole.SPECIALIST: self.specialist_rollout_wg},
+                                                                actor_rollout_wg={"draft": self.draft_rollout_wg, "target": self.target_rollout_wg},
                                                                 envs=self.envs,
                                                                 is_train=True,
                                                                 )
@@ -1287,14 +1283,14 @@ class RayPPOTrainer:
                         # update actor
                         with _timer("update_actor", timing_raw):
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
-                            actor_output = self.radiologist_rollout_wg.update_actor(batch)
-                            specialist_output = self.specialist_rollout_wg.update_actor(batch)
+                            target_output = self.target_rollout_wg.update_actor(batch)
+                            draft_output = self.draft_rollout_wg.update_actor(batch)
                             #radiologist_output = self.radiologist_rollout_wg.update_actor(batch)
-                        actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
-                        specialist_output_metrics = reduce_metrics(specialist_output.meta_info["metrics"])
+                        draft_output_metrics = reduce_metrics(draft_output.meta_info["metrics"])
+                        target_output_metrics = reduce_metrics(target_output.meta_info["metrics"])
                         #radiologist_output_metrics = reduce_metrics(radiologist_output.meta_info["metrics"])
-                        metrics.update(actor_output_metrics)
-                        metrics.update(specialist_output_metrics)
+                        metrics.update(draft_output_metrics)
+                        metrics.update(target_output_metrics)
                         #metrics.update(radiologist_output_metrics)
 
                     # Log rollout generations if enabled

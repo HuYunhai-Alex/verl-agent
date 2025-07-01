@@ -117,10 +117,14 @@ class MedicalConsultationCollector:
         # Create preprocessed sample
         preprocessed_sample = sample.copy()
         preprocessed_sample.update({
-            'doctor_role': doctor_role.value,
-            'consultation_context': full_context,
-            'role_prompt': role_prompt,
+            'doctor_role': np.array(doctor_role, dtype=object),
+            'consultation_context': np.array(full_context, dtype=object),
+            'role_prompt': np.array(role_prompt, dtype=object),
         })
+        
+        for key, value in preprocessed_sample.items():
+            if not isinstance(value, np.ndarray) and not isinstance(value, torch.Tensor):
+                preprocessed_sample[key] = np.array(value, dtype=object)
         
         return preprocessed_sample
     
@@ -150,7 +154,8 @@ class MedicalConsultationCollector:
         
         # Process each sample in the batch
         for sample_idx in range(len(gen_batch)):
-            sample = gen_batch[sample_idx].to_single_dict()
+            print(f'sample_idx: {sample_idx}, sample: {gen_batch[sample_idx]}')
+            sample = gen_batch[sample_idx].non_tensor_batch
             print(f"Processing case {sample_idx + 1}/{len(gen_batch)}")
             
             # Execute consultation for this sample
@@ -204,6 +209,7 @@ class MedicalConsultationCollector:
                     consultation_history=consultation_history
                 )
                 
+                print(f"doctor_sample: {doctor_sample}")
                 # Convert to DataProto for worker group
                 doctor_batch = DataProto.from_single_dict(data=doctor_sample)
                 
