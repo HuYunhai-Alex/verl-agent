@@ -469,7 +469,7 @@ class TrajectoryCollector:
             total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid = \
                 self.dynamic_multi_turn_loop(
                 gen_batch=gen_batch,
-                actor_rollout_wg=actor_rollout_wg,
+                actor_rollout_wg=actor_rollout_wg["draft"],
                 envs=envs,
             )
         else:

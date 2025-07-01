@@ -23,9 +23,6 @@ import ray
 from verl.trainer.ppo.ray_trainer_spec import RayPPOTrainer
 from verl.trainer.ppo.reward import load_reward_manager
 
-import verl.utils.torch_functional as verl_F
-from verl.utils.model import compute_position_id_with_mask
-
 
 @hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
 def main(config):
@@ -60,9 +57,8 @@ class TaskRunner:
         # download the checkpoint from hdfs
         local_path = copy_to_local(config.actor_rollout_ref.model.path, use_shm=config.actor_rollout_ref.model.get("use_shm", False))
 
-        # from agent_system.environments import make_envs
-        # envs, val_envs = make_envs(config)
-        envs, val_envs = None, None 
+        from agent_system.environments import make_envs
+        envs, val_envs = make_envs(config)
 
         # instantiate tokenizer
         from verl.utils import hf_processor, hf_tokenizer
@@ -110,7 +106,7 @@ class TaskRunner:
         global_pool_id = "global_pool"
         
         resource_pool_spec = {
-            global_pool_id: [1],
+            global_pool_id: [2],
             "target_pool": [1],
         }
         mapping = {
@@ -157,7 +153,7 @@ class TaskRunner:
 
         assert config.actor_rollout_ref.rollout.n == 1, "In verl, actor_rollout_ref.rollout.n>1 is for GRPO. In verl+env, we keep n=1, and achieve GRPO by env.rollout.n"
 
-        from agent_system.multi_turn_rollout import TrajectoryCollector
+        from agent_system.multi_turn_rollout.spec_rollout_loop import TrajectoryCollector
         traj_collector = TrajectoryCollector(config=config, tokenizer=tokenizer, processor=processor)
 
         from verl.utils.dataset.rl_dataset import collate_fn

@@ -26,9 +26,17 @@ data:
 actor_rollout_ref:
   hybrid_engine: True
   model:
-    path: Qwen/Qwen2.5-3B-Instruct
-    target_model_path: Qwen/Qwen2.5-3B-Instruct
-    draft_model_path: Qwen/Qwen2.5-3B-Instruct
+    specialist_model_path: /vast/yh5961/models/Qwen2.5-0.5B-Instruct  # Path to the specialist model, if any
+    internist_model_path: /vast/yh5961/models/Qwen2.5-0.5B-Instruct  # Path to the internist model, if any
+    radiologist_model_path: /vast/yh5961/models/Qwen2.5-0.5B-Instruct  # Path to the radiologist model, if any
+    attending_model_path: /vast/yh5961/models/Qwen2.5-0.5B-Instruct  # Path to the attending model, if any
+    specialist_lora_path: null  # LoRA path for specialist model, if any
+    internist_lora_path: null  # LoRA path for internist model, if any
+    radiologist_lora_path: null  # LoRA path for radiologist model, if any
+    attending_lora_path: null  # LoRA path for attending model, if anyS
+    target_model_path: microsoft/DialoGPT-medium
+    draft_model_path: microsoft/DialoGPT-medium  # Path to the attending model, if any
+    path: microsoft/DialoGPT-medium
     use_shm: False
     external_lib: null
     override_config: { }
@@ -269,7 +277,7 @@ trainer:
   # auto: find the last ckpt to resume. If can't find, start from scratch
   resume_mode: auto # or disable or resume_path if resume_from_path is set
   resume_from_path: null
-  val_before_train: True
+  val_before_train: False
   test_freq: -1
   critic_warmup: 0
   default_hdfs_dir: null
@@ -286,7 +294,7 @@ ray_init:
 
 
 env:
-  env_name: alfworld/AlfredTWEnv
+  env_name: null
   seed: 0
   max_steps: 50
   history_length: 2

@@ -13,7 +13,7 @@ python3 -m examples.data_preprocess.prepare \
     --train_data_size $train_data_size \
     --val_data_size $val_data_size
 
-python3 -m verl.trainer.main_ppo_spec \
+python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=gigpo \
     data.train_files=$HOME/data/verl-agent/text/train.parquet \
     data.val_files=$HOME/data/verl-agent/text/test.parquet \
@@ -24,7 +24,7 @@ python3 -m verl.trainer.main_ppo_spec \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     data.return_raw_chat=True \
-    actor_rollout_ref.model.path=Qwen/Qwen2.5-3B-Instruct \
+    actor_rollout_ref.model.path=microsoft/DialoGPT-medium \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=256 \

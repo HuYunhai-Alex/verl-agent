@@ -62,8 +62,7 @@ from verl.utils.tracking import ValidationGenerationsLogger
 from verl.workers.rollout.async_server import AsyncLLMServerManager
 from gigpo import core_gigpo
 
-from agent_system.multi_turn_rollout import TrajectoryCollector, adjust_batch
-from agent_system.multi_turn_rollout.medical_consultation_rollout import MedicalConsultationCollector, DoctorRole
+from agent_system.multi_turn_rollout.spec_rollout_loop import TrajectoryCollector
 
 WorkerType = Type[Worker]
 
@@ -405,7 +404,7 @@ class RayPPOTrainer:
         collate_fn=None,
         train_sampler: Optional[Sampler] = None,
         device_name="cuda",
-        traj_collector: MedicalConsultationCollector = None,
+        traj_collector: TrajectoryCollector = None,
         envs=None,
         val_envs=None,
     ):
@@ -459,11 +458,6 @@ class RayPPOTrainer:
 
         self._validate_config()
         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
-        
-        # self.train_dataset = train_dataset
-        # self.val_dataset = val_dataset
-        # self.train_sampler = train_sampler
-        # self.collate_fn = collate_fn
         
     def _init_dataloaders_multi(self):
         """Initialize data loaders"""
@@ -930,9 +924,6 @@ class RayPPOTrainer:
         self.draft_rollout_wg = all_wg["draft_rollout"]
         self.draft_rollout_wg.init_model()
 
-        # self.radiologist_rollout_wg = all_wg["radiologist_rollout"]
-        # self.radiologist_rollout_wg.init_model()
-
         # create async rollout manager and request scheduler
         self.async_rollout_mode = False
         if self.config.actor_rollout_ref.rollout.mode == "async":
@@ -941,9 +932,7 @@ class RayPPOTrainer:
                 config=self.config.actor_rollout_ref,
                 worker_group=self.radiologist_rollout_wg,
             )
-        
-        # self._init_dataloaders_multi()
-        
+                
     def _save_checkpoint(self):
         # path: given_path + `/global_step_{global_steps}` + `/actor`
         local_global_step_folder = os.path.join(self.config.trainer.default_local_dir, f"global_step_{self.global_steps}")
