@@ -57,8 +57,9 @@ class TaskRunner:
         # download the checkpoint from hdfs
         local_path = copy_to_local(config.actor_rollout_ref.model.path, use_shm=config.actor_rollout_ref.model.get("use_shm", False))
 
-        from agent_system.environments import make_envs
-        envs, val_envs = make_envs(config)
+        # from agent_system.environments import make_envs
+        # envs, val_envs = make_envs(config)
+        envs, val_envs = None, None
 
         # instantiate tokenizer
         from verl.utils import hf_processor, hf_tokenizer
@@ -106,7 +107,7 @@ class TaskRunner:
         global_pool_id = "global_pool"
         
         resource_pool_spec = {
-            global_pool_id: [2],
+            global_pool_id: [1],
             "target_pool": [1],
         }
         mapping = {
