@@ -1,3 +1,6 @@
+from collections import defaultdict
+from dataclasses import dataclass
+from enum import Enum
 import torch
 import numpy as np
 from verl import DataProto
@@ -9,7 +12,37 @@ import uuid
 from verl.models.transformers.qwen2_vl import get_rope_index
 from agent_system.multi_turn_rollout.utils import process_image, to_list_of_dict, torch_to_numpy, filter_group_data
 from agent_system.environments import EnvironmentManagerBase
-from typing import List, Dict
+from typing import List, Dict, Tuple
+
+
+class DoctorRole(Enum):
+    """Doctor role enumeration for medical consultation"""
+    SPECIALIST = "specialist"  
+    INTERNIST = "internist"   
+    RADIOLOGIST = "radiologist"  
+    ATTENDING = "attending"    # Attending Physician
+
+
+@dataclass
+class ConsultationTurn:
+    """Single turn in medical consultation"""
+    doctor_role: DoctorRole
+    input_text: str
+    response_text: str
+    turn_index: int
+    consultation_round: int
+
+def to_numpy(data):
+    if isinstance(data, torch.Tensor):
+        data = data.detach().cpu().numpy()
+    elif isinstance(data, np.ndarray):
+        pass
+    elif isinstance(data, (int, float, bool, Tuple, List)):
+        data = np.array(data)
+    else:
+        raise ValueError(f"Unsupported type: {type(data)})")
+    return data
+
 
 class TrajectoryCollector:
     def __init__(self, config, tokenizer: PreTrainedTokenizer, processor=None):
@@ -25,11 +58,27 @@ class TrajectoryCollector:
         self.tokenizer = tokenizer
         self.processor = processor
 
+        self.doctor_order = [
+            DoctorRole.SPECIALIST,
+            DoctorRole.INTERNIST,
+            DoctorRole.RADIOLOGIST,
+            DoctorRole.ATTENDING,
+        ]
+        
+        # Doctor role prompts
+        self.role_prompts = {
+            DoctorRole.SPECIALIST: "As a specialist, please provide your professional opinion on this case:",
+            DoctorRole.INTERNIST: "As an internist, please analyze this case from internal medicine perspective:",
+            DoctorRole.RADIOLOGIST: "As a radiologist, please interpret the imaging findings and provide insights:",
+            DoctorRole.ATTENDING: "As the attending physician, please synthesize all opinions and provide final recommendations:",
+        }
+
     def preprocess_single_sample(
         self,
         item: int,
         gen_batch: DataProto,
-        obs: Dict,
+        doctor_role: DoctorRole,
+        consultation_history: List[ConsultationTurn] = None
     ):
         """
         Process a single observation sample, organizing environment observations (text and/or images) 
@@ -45,37 +94,38 @@ class TrajectoryCollector:
         """
 
         raw_prompt = gen_batch.non_tensor_batch['raw_prompt'][item]
-        data_source = gen_batch.non_tensor_batch['data_source'][item]
+        # data_source = gen_batch.non_tensor_batch['data_source'][item]
         
-        # Get observation components
-        obs_texts = obs.get('text', None)
-        obs_images = obs.get('image', None)
-        obs_anchors = obs.get('anchor', None)
-        obs_text = obs_texts[item] if obs_texts is not None else None
-        obs_image = obs_images[item] if obs_images is not None else None
-        obs_anchor = obs_anchors[item] if obs_anchors is not None else None
-        is_multi_modal = obs_image is not None
-
-        _obs_anchor = torch_to_numpy(obs_anchor, is_object=True) if isinstance(obs_anchor, torch.Tensor) else obs_anchor
-
         # Build chat structure
         # obs_content = raw_prompt[0]['content']
         # if '<image>' in obs_content: 
         #     obs_content = obs_content.replace('<image>', '')
 
-        # Build chat structure
-        obs_content = ''
-        if obs_text is not None:
-            obs_content += obs_text
-        else:
-            print(f"Warning: No text observation found!")
+        # Build chat structure        
+        context_parts = []
+        if raw_prompt:
+            context_parts.append(f"Medical Case:\n{raw_prompt}")
 
+
+
+        if consultation_history:
+            context_parts.append("\nPrevious Consultation:")
+            for turn in consultation_history:
+                context_parts.append(
+                    f"\n{turn.doctor_role.value.title()}: {turn.response_text}"
+                )
+
+        role_prompt = self.role_prompts.get(doctor_role, "Please provide your medical opinion:")
+        context_parts.append(f"\n{role_prompt}")
         
+        # Combine all context
+        full_context = "\n".join(context_parts)
+
         chat = np.array([{
-            "content": obs_content,
+            "content": full_context,
             "role": "user",
         }])
-        
+
         # Apply chat template
         prompt_with_chat_template = self.tokenizer.apply_chat_template(
             chat,
@@ -87,30 +137,7 @@ class TrajectoryCollector:
         row_dict = {}
         
         # Process multimodal data
-        if is_multi_modal:
-            # Replace image placeholder with vision tokens
-            raw_prompt = prompt_with_chat_template.replace('<image>', '<|vision_start|><|image_pad|><|vision_end|>')
-            row_dict['multi_modal_data'] = {'image': [process_image(obs_image)]}
-            image_inputs = self.processor.image_processor(row_dict['multi_modal_data']['image'], return_tensors='pt')
-            image_grid_thw = image_inputs['image_grid_thw']
-            row_dict['multi_modal_inputs'] = {key: val for key, val in image_inputs.items()}
-            if image_grid_thw is not None:
-                merge_length = self.processor.image_processor.merge_size**2
-                index = 0
-                while '<image>' in prompt_with_chat_template:
-                    prompt_with_chat_template = prompt_with_chat_template.replace(
-                        '<image>',
-                        '<|vision_start|>' + '<|placeholder|>' * (image_grid_thw[index].prod() // merge_length) +
-                        '<|vision_end|>',
-                        1,
-                    )
-                    index += 1
-
-                prompt_with_chat_template = prompt_with_chat_template.replace('<|placeholder|>',
-                                                                                self.processor.image_token)
-
-        else:
-            raw_prompt = prompt_with_chat_template
+        raw_prompt = prompt_with_chat_template
         
         input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(prompt=prompt_with_chat_template,
                                                                             tokenizer=self.tokenizer,
@@ -121,16 +148,7 @@ class TrajectoryCollector:
         
         
 
-        if is_multi_modal:
-
-            position_ids = get_rope_index(
-                self.processor,
-                input_ids=input_ids[0],
-                image_grid_thw=image_grid_thw,
-                attention_mask=attention_mask[0],
-            )  # (3, seq_len)
-        else:
-            position_ids = compute_position_id_with_mask(attention_mask)
+        position_ids = compute_position_id_with_mask(attention_mask)
         
         # Build final output dict
         row_dict.update({
@@ -138,9 +156,10 @@ class TrajectoryCollector:
             'attention_mask': attention_mask[0],
             'position_ids': position_ids[0],
             'raw_prompt_ids': self.tokenizer.encode(raw_prompt, add_special_tokens=False),
-            'anchor_obs': _obs_anchor,
+            'doctor_role': np.array(doctor_role, dtype=object),
+            'consultation_context': np.array(full_context, dtype=object),
             'index': item,
-            'data_source': data_source
+            # 'data_source': data_source
         })
 
         if self.config.data.get('return_raw_chat', False):
@@ -151,7 +170,8 @@ class TrajectoryCollector:
     def preprocess_batch(
         self,
         gen_batch: DataProto, 
-        obs: Dict, 
+        doctor_role: DoctorRole, 
+        consultation_history_batch: List[List[ConsultationTurn]] = None
     ) -> DataProto:
         """
         Process a batch of observation samples, converting environment observations into model-processable format.
@@ -175,7 +195,8 @@ class TrajectoryCollector:
             processed = self.preprocess_single_sample(
                 item=item,
                 gen_batch=gen_batch,
-                obs=obs,
+                doctor_role=doctor_role,
+                consultation_history=consultation_history_batch[item] if consultation_history_batch else None
             )
             processed_samples.append(processed)
         
@@ -254,10 +275,40 @@ class TrajectoryCollector:
         )
         return gen_batch_output
 
-    def vanilla_multi_turn_loop(
+    def success_evaluator(self, *args, **kwargs) -> Dict[str, np.ndarray]:
+        """
+        Evaluate if the episodes are successful or not. 
+        (Default) implementation is to check info['won'] of the last step.
+        
+        Returns:
+        - success (np.ndarray or torch.Tensor): 1 if the episode is successful, 0 otherwise.
+        """
+        total_infos = kwargs['total_infos']
+        total_batch_list = kwargs['total_batch_list']
+        batch_size = len(total_batch_list)
+        
+        success = defaultdict(list)
+        
+        for bs in range(batch_size):
+            self._process_batch(bs, total_batch_list, total_infos, success)
+        
+        assert len(success['success_rate']) == batch_size
+
+        return {key: np.array(value) for key, value in success.items()}
+    
+    def _process_batch(self, batch_idx, total_batch_list, total_infos, success):
+        for i in reversed(range(len(total_batch_list[batch_idx]))):
+            batch_item = total_batch_list[batch_idx][i]
+            if batch_item['active_masks']:
+                # info = total_infos[batch_idx][i]
+                won_value = float(0)
+                success['success_rate'].append(won_value)
+                return
+
+    def medical_multi_turn_loop(
             self,
             gen_batch: DataProto, 
-            actor_rollout_wg, 
+            doctor_worker_groups,
             envs: EnvironmentManagerBase,
             ) -> DataProto:
         """
@@ -274,9 +325,167 @@ class TrajectoryCollector:
             success (Dict[str, np.ndarray]): Success samples for each environment
             traj_uid (np.ndarray): Trajectory unique identifiers
         """
-        # Initial observations from the environment
-        obs, infos = envs.reset()
+        # Initialize trajectory collection
+        if self.config.env.rollout.n > 0:
+            gen_batch = gen_batch.repeat(repeat_times=self.config.env.rollout.n, interleave=True)
 
+        batch_size = len(gen_batch.batch['input_ids'])
+        batch_output = None
+        
+        if self.config.env.rollout.n > 0: # env grouping
+            uid_batch = []
+            for i in range(batch_size):
+                if i % self.config.env.rollout.n == 0:
+                    uid = str(uuid.uuid4())
+                uid_batch.append(uid)
+            uid_batch = np.array(uid_batch, dtype=object)
+        else: # no env grouping, set all to the same uid
+            uid = str(uuid.uuid4())
+            uid_batch = np.array([uid for _ in range(len(gen_batch.batch))], dtype=object)
+        is_done = np.zeros(batch_size, dtype=bool)
+        traj_uid = np.array([str(uuid.uuid4()) for _ in range(batch_size)], dtype=object)
+        total_batch_list = [[] for _ in range(batch_size)]
+        total_infos = [[] for _ in range(batch_size)]
+        episode_lengths = np.zeros(batch_size, dtype=np.int32)
+        episode_rewards = np.zeros(batch_size, dtype=np.float32)
+
+        consultation_history_batch = [None] * batch_size
+        consultation_results_batch = [None] * batch_size
+
+        for _step in range(self.config.env.max_steps):
+            for doctor_role in self.doctor_order:
+                if doctor_role not in doctor_worker_groups:
+                    print(f"  Warning: {doctor_role.value} worker group not available")
+                    continue
+                
+                print(f"{doctor_role.value.title()} consultation...")
+                
+                active_masks = np.logical_not(is_done)
+
+                batch = self.preprocess_batch(gen_batch=gen_batch, doctor_role=doctor_role, consultation_history_batch=consultation_history_batch)
+
+                batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
+                non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
+                if "multi_modal_data" in batch.non_tensor_batch:
+                    non_tensor_batch_keys_to_pop.append("multi_modal_data")
+                if "raw_prompt" in batch.non_tensor_batch:
+                    non_tensor_batch_keys_to_pop.append("raw_prompt")
+                if "tools_kwargs" in batch.non_tensor_batch:
+                    non_tensor_batch_keys_to_pop.append("tools_kwargs")
+                batch_input = batch.pop(
+                    batch_keys=batch_keys_to_pop,
+                    non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
+                )
+
+                batch_input.meta_info = gen_batch.meta_info
+
+                batch_output = doctor_worker_groups[doctor_role].generate_sequences(batch_input)
+
+                batch.non_tensor_batch['uid'] = uid_batch
+                batch.non_tensor_batch['traj_uid'] = traj_uid
+
+                batch = batch.union(batch_output)
+
+                response_text = self.tokenizer.batch_decode(batch.batch['responses'], skip_special_tokens=True)
+
+                for i in range(batch_size):
+                    consultation_turn = ConsultationTurn(
+                                doctor_role=doctor_role,
+                                input_text=batch.non_tensor_batch['consultation_context'][i],
+                                response_text=response_text[i],
+                                turn_index=0,
+                                consultation_round=_step
+                            )
+                    if consultation_history_batch[i]:
+                        consultation_history_batch[i].append(consultation_turn)
+                    else:
+                        consultation_history_batch[i] = [consultation_turn]
+
+                    result_data = {
+                        'case_id': batch[i].non_tensor_batch.get('case_id', f'case_{hash(str(batch[i]))}'),
+                        'doctor_role': doctor_role.value,
+                        'consultation_round': _step,
+                        'turn_index': consultation_turn.turn_index,
+                        'input_text': consultation_turn.input_text,
+                        'response_text': response_text,
+                        'prompts': batch[i].non_tensor_batch['consultation_context'],
+                        'responses': batch.batch['responses'][i],
+                        'response_length': len(batch.batch['responses'][i]),
+                    }
+
+                    if hasattr(batch.batch, 'meta_info') and batch.batch.meta_info:
+                        result_data.update(batch.batch.meta_info)
+
+                    if consultation_results_batch[i]:
+                        consultation_results_batch[i].append(result_data)
+                    else:
+                        consultation_results_batch[i] = [result_data]
+
+                rewards, dones = torch.ones(batch_size, dtype=torch.float32), torch.zeros(batch_size, dtype=torch.bool)
+
+                if len(rewards.shape) == 2:
+                    rewards = rewards.squeeze(1)
+                if len(dones.shape) == 2:
+                    # dones is numpy, delete a dimension
+                    dones = dones.squeeze(1)
+
+                # if 'is_action_valid' in infos[0]:
+                #     batch.non_tensor_batch['is_action_valid'] = np.array([info['is_action_valid'] for info in infos], dtype=bool)
+                # else:
+                #     batch.non_tensor_batch['is_action_valid'] = np.ones(batch_size, dtype=bool)
+                batch.non_tensor_batch['is_action_valid'] = np.ones(batch_size, dtype=bool)
+                
+                # Create reward tensor, only assign rewards for active environments
+                episode_rewards += torch_to_numpy(rewards) * torch_to_numpy(active_masks)
+                episode_lengths[active_masks] += 1
+
+                assert len(rewards) == batch_size, f"env should return rewards for all environments, got {len(rewards)} rewards for {batch_size} environments"
+                batch.non_tensor_batch['rewards'] = torch_to_numpy(rewards, is_object=True)
+                batch.non_tensor_batch['active_masks'] = torch_to_numpy(active_masks, is_object=True)
+
+                # Update episode lengths for active environments
+                batch_list: list[dict] = to_list_of_dict(batch)
+
+                for i in range(batch_size):
+                    total_batch_list[i].append(batch_list[i])
+                    # total_infos[i].append(infos[i])
+
+                # Update done states
+                is_done = np.logical_or(is_done, dones)
+
+                # Break if all environments are done
+                if is_done.all():
+                    break
+        
+        success: Dict[str, np.ndarray] = self.success_evaluator(
+                    total_infos=total_infos,
+                    total_batch_list=total_batch_list,
+                    episode_rewards=episode_rewards, 
+                    episode_lengths=episode_lengths,
+                    )
+        
+        return total_batch_list, episode_rewards, episode_lengths, success, traj_uid
+
+    def vanilla_multi_turn_loop(
+            self,
+            gen_batch: DataProto, 
+            doctor_worker_groups,
+            envs: EnvironmentManagerBase,
+            ) -> DataProto:
+        """
+        Collects trajectories through parallel agent-environment agent_loop.
+        Parameters:
+            gen_batch (DataProto): Initial batch with prompts to start the agent_loop
+            actor_rollout_wg (WorkerGroup): Worker group containing the actor model for policy decisions
+            envs (EnvironmentManagerBase): Environment manager containing parallel environment instances
+        
+        Returns:
+            total_batch_list (List[Dict]): List of trajectory data for each environment
+            episode_rewards (np.ndarray): Total rewards for each environment
+            episode_lengths (np.ndarray): Total steps for each environment
+            success (Dict[str, np.ndarray]): Success samples for each environment
+            traj_uid (np.ndarray): Trajectory unique identifiers
+        """
         # Initialize trajectory collection
         lenght_obs = len(obs['text']) if obs['text'] is not None else len(obs['image'])
         if len(gen_batch.batch) != lenght_obs and self.config.env.rollout.n > 0:
@@ -303,6 +512,7 @@ class TrajectoryCollector:
         episode_lengths = np.zeros(batch_size, dtype=np.int32)
         episode_rewards = np.zeros(batch_size, dtype=np.float32)
         # Trajectory collection loop
+        
         for _step in range(self.config.env.max_steps):
             active_masks = np.logical_not(is_done)
 
@@ -323,7 +533,7 @@ class TrajectoryCollector:
 
             batch_input.meta_info = gen_batch.meta_info
 
-            batch_output = actor_rollout_wg.generate_sequences(batch_input)
+            batch_output = doctor_worker_groups.generate_sequences(batch_input)
 
             batch.non_tensor_batch['uid'] = uid_batch
             batch.non_tensor_batch['traj_uid'] = traj_uid
@@ -447,7 +657,7 @@ class TrajectoryCollector:
     def multi_turn_loop(
             self,
             gen_batch: DataProto, 
-            actor_rollout_wg, 
+            doctor_worker_groups: Dict[DoctorRole, any],
             envs: EnvironmentManagerBase,
             is_train: bool = True,
             ) -> DataProto:
@@ -469,15 +679,15 @@ class TrajectoryCollector:
             total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid = \
                 self.dynamic_multi_turn_loop(
                 gen_batch=gen_batch,
-                actor_rollout_wg=actor_rollout_wg,
+                actor_rollout_wg=doctor_worker_groups,
                 envs=envs,
             )
         else:
             # Vanilla Sampling   
             total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid = \
-                self.vanilla_multi_turn_loop(
+                self.medical_multi_turn_loop(
                 gen_batch=gen_batch,
-                actor_rollout_wg=actor_rollout_wg,
+                doctor_worker_groups=doctor_worker_groups,
                 envs=envs,
             )
         assert len(total_batch_list) == len(total_episode_rewards)

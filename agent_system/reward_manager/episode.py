@@ -59,7 +59,7 @@ class EpisodeRewardManager:
 
             # ground_truth = data_item.non_tensor_batch['reward_model']['ground_truth']
 
-            data_source = data_item.non_tensor_batch['data_source']
+            # data_source = data_item.non_tensor_batch['data_source']
 
             extra_info = data_item.non_tensor_batch.get('extra_info', None)
             multi_modal_inputs = data_item.non_tensor_batch.get('multi_modal_inputs', None)
@@ -77,14 +77,14 @@ class EpisodeRewardManager:
                 score = episode_rewards
             reward_tensor[i, valid_response_length - 1] = torch.tensor(score, dtype=torch.float32, device=prompt_ids.device)
 
-            if data_source not in already_print_data_sources:
-                already_print_data_sources[data_source] = 0
+            # if data_source not in already_print_data_sources:
+            #     already_print_data_sources[data_source] = 0
 
-            if already_print_data_sources[data_source] < self.num_examine and np.random.random() < 0.1:
-                already_print_data_sources[data_source] += 1
-                print("[prompt]", prompt_str)
-                print("[response]", response_str)
-                print("[score]", score)
+            # if already_print_data_sources[data_source] < self.num_examine and np.random.random() < 0.1:
+            #     already_print_data_sources[data_source] += 1
+            #     print("[prompt]", prompt_str)
+            #     print("[response]", response_str)
+            #     print("[score]", score)
 
         if return_dict:
             return {

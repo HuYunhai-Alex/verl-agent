@@ -29,6 +29,8 @@ actor_rollout_ref:
     path: Qwen/Qwen2.5-3B-Instruct
     target_model_path: Qwen/Qwen2.5-3B-Instruct
     draft_model_path: Qwen/Qwen2.5-3B-Instruct
+    specialist_path: Qwen/Qwen2.5-3B-Instruct
+    internist_path: Qwen/Qwen2.5-3B-Instruct
     use_shm: False
     external_lib: null
     override_config: { }
