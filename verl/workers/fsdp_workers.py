@@ -143,7 +143,7 @@ class ActorRolloutRefWorker(Worker):
                 self.config.model.path = self.config.model.draft_model_path if self.role == "draft_rollout" else self.config.model.target_model_path
         
         self._is_actor = self.role in ["actor", "actor_rollout", "actor_rollout_ref", "draft_rollout", "specialist_rollout", "internist_rollout", "radiologist_rollout"]
-        self._is_rollout = self.role in ["rollout", "actor_rollout", "actor_rollout_ref", "draft_rollout", "target_rollout", "specialist_rollout", "internist_rollout"]
+        self._is_rollout = self.role in ["rollout", "actor_rollout", "actor_rollout_ref", "draft_rollout", "specialist_rollout", "internist_rollout"]
         self._is_ref = self.role in ["ref", "actor_rollout_ref", "target_rollout", "specialist_rollout_ref", "radiologist_rollout_ref"]
 
         self._is_offload_param = False
@@ -428,6 +428,7 @@ class ActorRolloutRefWorker(Worker):
                     tokenizer=self.tokenizer,
                     model_hf_config=self.actor_model_config,
                     trust_remote_code=trust_remote_code,
+                    role=self.role,
                     **lora_kwargs)
             elif vllm_mode == "spmd":
                 from verl.workers.rollout.vllm_rollout import vLLMAsyncRollout
@@ -440,6 +441,7 @@ class ActorRolloutRefWorker(Worker):
                     model_hf_config=self.actor_model_config,
                     device_mesh=rollout_device_mesh,
                     trust_remote_code=trust_remote_code,
+                    role=self.role,
                     **lora_kwargs)
             else:
                 raise NotImplementedError("vllm_mode must be 'customized' or 'spmd'")

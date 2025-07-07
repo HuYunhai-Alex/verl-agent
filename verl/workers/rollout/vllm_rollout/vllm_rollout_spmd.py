@@ -75,7 +75,7 @@ def _repeat_interleave(value: Union[torch.Tensor, np.ndarray], repeats: int) -> 
 
 
 class vLLMRollout(BaseRollout):
-    def __init__(self, model_path: str, config: DictConfig, tokenizer, model_hf_config, **kwargs):
+    def __init__(self, model_path: str, config: DictConfig, tokenizer, model_hf_config, role, **kwargs):
         """A vLLM rollout. It requires the module is supported by the vllm.
 
         Args:
@@ -166,6 +166,10 @@ class vLLMRollout(BaseRollout):
             enable_chunked_prefill=config.enable_chunked_prefill,
             enable_prefix_caching=True,
             trust_remote_code=trust_remote_code,
+            # speculative_config={
+            #     "model": "Qwen/Qwen2.5-3B-Instruct",
+            #     "num_speculative_tokens": 5,
+            # },
             seed=config.get("seed", 0),
             **lora_kwargs,
             **engine_kwargs,

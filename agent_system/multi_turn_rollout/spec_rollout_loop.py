@@ -1,4 +1,5 @@
 from collections import defaultdict
+import random
 import torch
 import numpy as np
 from verl import DataProto
@@ -39,7 +40,7 @@ class TrajectoryCollector:
         self,
         item: int,
         gen_batch: DataProto,
-        obs: Dict,
+        spec_history,
         template_enable: bool = True,
     ):
         """
@@ -56,33 +57,18 @@ class TrajectoryCollector:
         """
 
         raw_prompt = gen_batch.non_tensor_batch['raw_prompt'][item]
-        data_source = gen_batch.non_tensor_batch['data_source'][item]
-        
-        # Get observation components
-        obs_texts = obs.get('text', None)
-        obs_images = obs.get('image', None)
-        obs_anchors = obs.get('anchor', None)
-        obs_text = obs_texts[item] if obs_texts is not None else None
-        obs_image = obs_images[item] if obs_images is not None else None
-        obs_anchor = obs_anchors[item] if obs_anchors is not None else None
-        is_multi_modal = obs_image is not None
-
-        _obs_anchor = torch_to_numpy(obs_anchor, is_object=True) if isinstance(obs_anchor, torch.Tensor) else obs_anchor
-
-        # Build chat structure
         obs_content = raw_prompt[0]['content']
-        # if '<image>' in obs_content: 
-        #     obs_content = obs_content.replace('<image>', '')
+        data_source = gen_batch.non_tensor_batch['data_source'][item]
+        next_ids = None
+
+        if spec_history is not None and spec_history[-1].get('next_ids', None) is not None:
+            # logger.warning(f"Processing item {item} latest spec_history: {spec_history[-1]}")
+            next_ids = spec_history[-1]['next_ids'] # Get the next response ids if available
 
         # Build chat structure
-        obs_content = ''
-        if obs_text is not None:
-            obs_content += obs_text
-        else:
-            print(f"Warning: No text observation found!")
         
         # Apply chat template
-        if template_enable:
+        if next_ids is None and template_enable:
             chat = np.array([{
                 "content": obs_content,
                 "role": "user",
@@ -93,37 +79,15 @@ class TrajectoryCollector:
                 tokenize=False
             )
         else:
-            chat = obs_content
-            prompt_with_chat_template = chat
+            prompt_with_chat_template = self.tokenizer.decode(next_ids, skip_special_tokens=False)
         
         # Initialize return dict
         row_dict = {}
         
         # Process multimodal data
-        if is_multi_modal:
-            # Replace image placeholder with vision tokens
-            raw_prompt = prompt_with_chat_template.replace('<image>', '<|vision_start|><|image_pad|><|vision_end|>')
-            row_dict['multi_modal_data'] = {'image': [process_image(obs_image)]}
-            image_inputs = self.processor.image_processor(row_dict['multi_modal_data']['image'], return_tensors='pt')
-            image_grid_thw = image_inputs['image_grid_thw']
-            row_dict['multi_modal_inputs'] = {key: val for key, val in image_inputs.items()}
-            if image_grid_thw is not None:
-                merge_length = self.processor.image_processor.merge_size**2
-                index = 0
-                while '<image>' in prompt_with_chat_template:
-                    prompt_with_chat_template = prompt_with_chat_template.replace(
-                        '<image>',
-                        '<|vision_start|>' + '<|placeholder|>' * (image_grid_thw[index].prod() // merge_length) +
-                        '<|vision_end|>',
-                        1,
-                    )
-                    index += 1
+        raw_prompt = prompt_with_chat_template
 
-                prompt_with_chat_template = prompt_with_chat_template.replace('<|placeholder|>',
-                                                                                self.processor.image_token)
-
-        else:
-            raw_prompt = prompt_with_chat_template
+        # logger.warning(f"Processing item {item} with raw prompt: {raw_prompt}")
         
         input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(prompt=prompt_with_chat_template,
                                                                             tokenizer=self.tokenizer,
@@ -134,24 +98,15 @@ class TrajectoryCollector:
         
         
 
-        if is_multi_modal:
-
-            position_ids = get_rope_index(
-                self.processor,
-                input_ids=input_ids[0],
-                image_grid_thw=image_grid_thw,
-                attention_mask=attention_mask[0],
-            )  # (3, seq_len)
-        else:
-            position_ids = compute_position_id_with_mask(attention_mask)
+        position_ids = compute_position_id_with_mask(attention_mask)
         
         # Build final output dict
         row_dict.update({
             'input_ids': input_ids[0],
             'attention_mask': attention_mask[0],
             'position_ids': position_ids[0],
-            'raw_prompt_ids': self.tokenizer.encode(raw_prompt, add_special_tokens=False),
-            'anchor_obs': _obs_anchor,
+            'raw_prompt_ids': self.tokenizer.encode(raw_prompt, add_special_tokens=True),
+            'raw_prompt': raw_prompt,
             'index': item,
             'data_source': data_source
         })
@@ -164,7 +119,7 @@ class TrajectoryCollector:
     def preprocess_batch(
         self,
         gen_batch: DataProto, 
-        obs: Dict, 
+        spec_history_batch: List, 
         template_enable: bool = True,
     ) -> DataProto:
         """
@@ -182,14 +137,16 @@ class TrajectoryCollector:
         """
         batch_size = len(gen_batch.batch['input_ids'])
         processed_samples = []
-        
+        # logger.warning(f"Preprocessing batch of size {batch_size} with gen_batch: {gen_batch}")
+
+        # logger.warning(f"Spec history batch: {spec_history_batch}")         
         # Process each sample in parallel
         for item in range(batch_size):
             # Extract per-sample observations
             processed = self.preprocess_single_sample(
                 item=item,
                 gen_batch=gen_batch,
-                obs=obs,
+                spec_history=spec_history_batch[item],
                 template_enable=template_enable,
             )
             processed_samples.append(processed)
@@ -211,7 +168,6 @@ class TrajectoryCollector:
             total_batch_list: List[List[Dict]],
             episode_rewards: np.ndarray,
             episode_lengths: np.ndarray,
-            success: Dict[str, np.ndarray],
             traj_uid: np.ndarray,
             ) -> DataProto:
         """
@@ -237,9 +193,9 @@ class TrajectoryCollector:
         episode_lengths_min = np.min(episode_lengths)
         episode_lengths_max = np.max(episode_lengths)
 
-        success_rate = {}
-        for key, value in success.items():
-            success_rate[key] = np.mean(value)
+        # success_rate = {}
+        # for key, value in success.items():
+        #     success_rate[key] = np.mean(value)
         
         effective_batch = []
         for bs in range(batch_size):
@@ -258,8 +214,8 @@ class TrajectoryCollector:
                     data['episode_lengths_min'] = episode_lengths_min
                     data['episode_lengths_max'] = episode_lengths_max
                     # success_rate
-                    for key, value in success_rate.items():
-                        data[key] = value
+                    # for key, value in success_rate.items():
+                    #     data[key] = value
 
                     effective_batch.append(data)
             
@@ -271,8 +227,10 @@ class TrajectoryCollector:
 
     def step(
         self,
+        draft_rollout_wg,
         target_rollout_wg,
         text_actions,
+        batch,
         batch_input: DataProto,
     ):
         """Compare draft actions against target model output.
@@ -282,78 +240,52 @@ class TrajectoryCollector:
         Next obs  = 当前 prompt + 通过的 prefix token 重新 decode 出文本。
         """
         # 1. target model output
-        target_output = target_rollout_wg.generate_sequences(batch_input)
-        tgt_responses = target_output.batch["responses"]  # Tensor (bs, seq)
+        # logger.warning(f"before log_probs batch {batch}")
+        draft_log_probs = draft_rollout_wg.compute_log_prob(batch)
+        target_log_probs = target_rollout_wg.compute_ref_log_prob(batch)
 
-        batch_size = len(text_actions)
+        batch_size = len(draft_log_probs)
         rewards = np.zeros(batch_size, dtype=np.float32)
         dones = np.zeros(batch_size, dtype=bool)
-        next_texts: List[str] = []
-        infos: List[Dict] = []
+
+        accept_batch = []
+        passed_token_batch = []
 
         for i in range(batch_size):
-            # draft ids (List[int])
-            draft_ids = text_actions[i]
-            tgt_ids = tgt_responses[i]
-
-            # 连续前缀匹配长度
-            match_len = 0
-            for d, t in zip(draft_ids, tgt_ids):
-                if d == t:
-                    match_len += 1
+            accept = 0
+            is_done = False
+            # logger.warning(f"Processing batch {i} with draft response decoded: {self.tokenizer.decode(batch.batch['responses'][i], skip_special_tokens=True)}")
+            sequence_length = len(draft_log_probs.batch[i].get("old_log_probs", []))
+            for j in range(sequence_length):
+                r = random.random()
+                # logger.warning(f"r is {r}, Draft log prob: {draft_log_probs.batch[i].get('old_log_probs', [])[j]}, Target ref log prob: {target_log_probs.batch[i].get('ref_log_prob', [])[j]}")
+                if torch.log(torch.tensor(r)) <= draft_log_probs.batch[i].get("old_log_probs", [])[j] - (target_log_probs.batch[i].get("ref_log_prob", [])[j] + 1e-8):
+                    accept += 1
+                    if batch.batch["responses"][i][j] == self.tokenizer.eos_token_id:
+                        logger.warning(f"Accepting token {j} for batch {i} with EOS token.")
+                        accept = len(draft_log_probs.batch[i].get("old_log_probs", []))  # Accept all tokens if EOS is found
+                        is_done = True
+                        break
                 else:
                     break
+            # passed_token = batch.batch['responses'][i][:j]
+            logger.warning(f"input_ids: {batch.batch['input_ids'][i][batch.batch['attention_mask'][i].bool()][-5:]}, responses: {batch.batch['responses'][i]}")
+            # assert batch.batch['input_ids'][i][:-sequence_length] == batch.batch['responses'][i][:-sequence_length ], f"Input IDs and responses mismatch for batch {i}: {self.tokenizer.decode(batch.batch['input_ids'][i][:-sequence_length])} vs {self.tokenizer.decode(batch.batch['responses'][i][:-sequence_length])}"
+            if accept == 0:
+                logger.warning(f"Accept is 0 for batch {i}, using the first token as next input.")
+                next_input_ids = batch.batch['input_ids'][i][batch.batch['attention_mask'][i].bool()][:j-sequence_length+1]
 
-            ratio = match_len / max(1, len(tgt_ids))
-            rewards[i] = ratio
-            dones[i] = match_len == len(tgt_ids)
+            next_input_ids = batch.batch['input_ids'][i][batch.batch['attention_mask'][i].bool()][:j-sequence_length]
+            passed_token_batch.append(next_input_ids)
+            
+            accept_batch.append(accept)
+            rewards[i] = accept / max(1, len(draft_log_probs.batch[i].get("old_log_probs", [])))
+            dones[i] = is_done
 
-            # 下一个输入 = 上一个 prompt + 匹配 token
-            prev_prompt_ids = batch_input.batch["input_ids"][i].tolist()
-            next_input_ids = prev_prompt_ids + tgt_ids[:match_len].tolist()
-            next_text = self.tokenizer.decode(next_input_ids, skip_special_tokens=True)
-            next_texts.append(next_text)
-
-            infos.append({
-                "draft_match_prefix_len": match_len,
-                "draft_match_ratio": ratio,
-                "next_input_ids": next_input_ids,
-                "won": 0
-            })
-
+        logger.warning(f"Accept batch: {accept_batch}")
+                
         # 返回给主循环的 "obs" — 用文本字段即可
-        next_obs = {"text": next_texts}
-        return next_obs, rewards, dones, infos
-
-    def success_evaluator(self, *args, **kwargs) -> Dict[str, np.ndarray]:
-        """
-        Evaluate if the episodes are successful or not. 
-        (Default) implementation is to check info['won'] of the last step.
-        
-        Returns:
-        - success (np.ndarray or torch.Tensor): 1 if the episode is successful, 0 otherwise.
-        """
-        total_infos = kwargs['total_infos']
-        total_batch_list = kwargs['total_batch_list']
-        batch_size = len(total_batch_list)
-        
-        success = defaultdict(list)
-        
-        for bs in range(batch_size):
-            self._process_batch(bs, total_batch_list, total_infos, success)
-        
-        assert len(success['success_rate']) == batch_size
-
-        return {key: np.array(value) for key, value in success.items()}
-    
-    def _process_batch(self, batch_idx, total_batch_list, total_infos, success):
-        for i in reversed(range(len(total_batch_list[batch_idx]))):
-            batch_item = total_batch_list[batch_idx][i]
-            if batch_item['active_masks']:
-                info = total_infos[batch_idx][i]
-                won_value = float(info['won'])
-                success['success_rate'].append(won_value)
-                return
+        return passed_token_batch, rewards, dones
 
     def vanilla_multi_turn_loop(
         self,
@@ -375,23 +307,11 @@ class TrajectoryCollector:
         """
         logger.warning("Starting `vanilla_multi_turn_loop` – requested max_steps=%d", self.config.env.max_steps)
 
-        # 1️⃣  Environment reset – obtain initial observation.
-        obs, infos = {'text': ['']*len(gen_batch.batch), 'image': None, 'anchor': None}, []
-        # logger.warning("Environment reset: obtained %d parallel observations", len(obs["text"]) if obs["text"] is not None else len(obs["image"]))
-
-        # 2️⃣  Ensure gen_batch matches the number of envs.
-        num_envs = len(obs["text"]) if obs["text"] is not None else len(obs["image"])
-        if len(gen_batch.batch) != num_envs and self.config.env.rollout.n > 0:
-            logger.warning("Repeating gen_batch from %d to %d to match env grouping (n=%d)", len(gen_batch.batch), num_envs, self.config.env.rollout.n)
+        if self.config.env.rollout.n > 0:
             gen_batch = gen_batch.repeat(repeat_times=self.config.env.rollout.n, interleave=True)
-        assert len(gen_batch.batch) == num_envs, (
-            f"gen_batch size {len(gen_batch.batch)} does not match obs size {num_envs}"
-        )
 
         batch_size = len(gen_batch.batch["input_ids"])
-        logger.warning("Collector initialised with batch_size=%d", batch_size)
 
-        # 3️⃣  UID bookkeeping.
         if self.config.env.rollout.n > 0:
             uid_batch: List[str] = []
             for i in range(batch_size):
@@ -405,15 +325,14 @@ class TrajectoryCollector:
         traj_uid = np.array([str(uuid.uuid4()) for _ in range(batch_size)], dtype=object)
         logger.warning("Generated traj_uid for each env: %s", traj_uid)
 
-        # 4️⃣  Tracking containers.
         is_done = np.zeros(batch_size, dtype=bool)
         total_batch_list: List[list] = [[] for _ in range(batch_size)]
-        total_infos: List[list] = [[] for _ in range(batch_size)]
         episode_lengths = np.zeros(batch_size, dtype=np.int32)
         episode_rewards = np.zeros(batch_size, dtype=np.float32)
         template_enable = True
 
-        # 5️⃣  Trajectory loop.
+        spec_history_batch = [None] * batch_size  # Placeholder for spec history, if needed
+
         for step_idx in range(self.config.env.max_steps):
             logger.warning("\u27a1\ufe0f  Step %d / %d", step_idx + 1, self.config.env.max_steps)
             active_masks = np.logical_not(is_done)
@@ -421,12 +340,9 @@ class TrajectoryCollector:
                 logger.warning("All environments done at step %d", step_idx)
                 break
 
-            # Pre‑process batch with current observations.
-            batch = self.preprocess_batch(gen_batch=gen_batch, obs=obs, template_enable=template_enable)
+            batch = self.preprocess_batch(gen_batch=gen_batch, spec_history_batch=spec_history_batch, template_enable=template_enable)
             template_enable = False
-            logger.warning("Batch pre‑processed – keys: %s", list(batch.batch.keys()))
 
-            # Pop large fields to reduce IPC overhead to workers.
             batch_input = batch.pop(
                 batch_keys=["input_ids", "attention_mask", "position_ids"],
                 non_tensor_batch_keys=[
@@ -444,7 +360,7 @@ class TrajectoryCollector:
 
             # Draft generation.
             batch_output = draft_rollout_wg.generate_sequences(batch_input)
-            logger.warning("Draft sequences generated – shape: %s", batch_output.batch["responses"].shape)
+            # logger.warning("Draft sequences generated – shape: %s", batch_output.batch["responses"].shape)
 
             # Merge outputs back.
             batch.non_tensor_batch["uid"] = uid_batch
@@ -456,26 +372,36 @@ class TrajectoryCollector:
                 batch.batch["responses"],
                 skip_special_tokens=True,
             )
-            logger.warning("Decoded %d actions", len(text_actions))
+            # logger.warning("Decoded %d actions", len(text_actions))
 
             # Execute actions in environment.
-            next_obs, rewards, dones, infos = self.step(target_rollout_wg, batch.batch["responses"], batch_input)
-            logger.warning("Env step: rewards shape=%s, dones shape=%s", rewards.shape, dones.shape)
+            passed_token_batch, rewards, dones = self.step(draft_rollout_wg, target_rollout_wg, batch.batch["responses"], batch, batch_input)
+            # logger.warning("Env step: rewards shape=%s, dones shape=%s", rewards.shape, dones.shape)
 
+            for item in range(batch_size):
+                spec_history = {
+                        "input_ids": batch.batch["input_ids"][item].tolist(),
+                        "attention_mask": batch.batch["attention_mask"][item].tolist(),
+                        "position_ids": batch.batch["position_ids"][item].tolist(),
+                        # "raw_prompt_ids": batch.non_tensor_batch["raw_prompt_ids"][item],
+                        "raw_prompt": batch.non_tensor_batch["raw_prompt"][item],
+                        "generated_tokens": text_actions[item],
+                        "next_ids": passed_token_batch[item],  # Placeholder for passed text
+                        "text_action": text_actions[item],
+                        "image_action": None,  # Placeholder for image actions if needed
+                        }
+                if spec_history_batch[item] is None:
+                    spec_history_batch[item] = [spec_history]
+                else:
+                    spec_history_batch[item].append(spec_history)
+                
             # Squeeze singleton dims if any.
             if rewards.ndim == 2:
                 rewards = rewards.squeeze(1)
             if dones.ndim == 2:
                 dones = dones.squeeze(1)
 
-            # Log invalid actions if flag present.
-            if "is_action_valid" in infos[0]:
-                invalid_mask = np.logical_not([info["is_action_valid"] for info in infos])
-                if invalid_mask.any():
-                    logger.warning("%d / %d invalid actions detected", invalid_mask.sum(), batch_size)
-                batch.non_tensor_batch["is_action_valid"] = np.array([info["is_action_valid"] for info in infos], dtype=bool)
-            else:
-                batch.non_tensor_batch["is_action_valid"] = np.ones(batch_size, dtype=bool)
+            batch.non_tensor_batch["is_action_valid"] = np.ones(batch_size, dtype=bool)
 
             # Accumulate episode stats.
             episode_rewards += torch_to_numpy(rewards) * torch_to_numpy(active_masks)
@@ -487,11 +413,9 @@ class TrajectoryCollector:
             # Store per‑env step data.
             for i, env_dict in enumerate(to_list_of_dict(batch)):
                 total_batch_list[i].append(env_dict)
-                total_infos[i].append(infos[i])
 
             # Update termination flags & observation.
             is_done = np.logical_or(is_done, dones)
-            obs = next_obs
 
             logger.warning(
                 "STEP %-3d | actions=%s | r=%s | R=%s | done=%s",
@@ -502,16 +426,12 @@ class TrajectoryCollector:
                 dones.tolist(),
             )
 
-        # 6️⃣  Episode‑level success evaluation.
-        success: Dict[str, np.ndarray] = self.success_evaluator(
-            total_infos=total_infos,
-            total_batch_list=total_batch_list,
-            episode_rewards=episode_rewards,
-            episode_lengths=episode_lengths,
-        )
+            if is_done.all():
+                break
+
         logger.warning("Collection finished – mean_ep_reward=%.3f, mean_ep_length=%.2f", episode_rewards.mean(), episode_lengths.mean())
 
-        return total_batch_list, episode_rewards, episode_lengths, success, traj_uid
+        return total_batch_list, episode_rewards, episode_lengths, traj_uid
 
     
     def dynamic_multi_turn_loop(
@@ -548,6 +468,8 @@ class TrajectoryCollector:
 
         while len(total_batch_list) < self.config.data.train_batch_size * self.config.env.rollout.n and try_count < max_try_count:
 
+            logger.warning(f"Attempt {try_count + 1}/{max_try_count} to collect enough trajectories. Current count: {len(total_batch_list)}")
+
             if len(total_batch_list) > 0:
                 print(f"valid num={len(total_batch_list)} < target num={self.config.data.train_batch_size * self.config.env.rollout.n}. Keep generating... ({try_count}/{max_try_count})")
             try_count += 1
@@ -558,7 +480,7 @@ class TrajectoryCollector:
                 target_rollout_wg=target_rollout_wg,
                 envs=envs,
             )
-            batch_list, episode_rewards, episode_lengths, success, traj_uid = filter_group_data(batch_list=batch_list,
+            batch_list, episode_rewards, episode_lengths, traj_uid = filter_group_data(batch_list=batch_list,
                                                                                                 episode_rewards=episode_rewards, 
                                                                                                 episode_lengths=episode_lengths, 
                                                                                                 success=success, 
@@ -570,12 +492,12 @@ class TrajectoryCollector:
             total_batch_list += batch_list
             total_episode_rewards.append(episode_rewards)
             total_episode_lengths.append(episode_lengths)
-            total_success.append(success)
+            #total_success.append(success)
             total_traj_uid.append(traj_uid)
 
         total_episode_rewards = np.concatenate(total_episode_rewards, axis=0)
         total_episode_lengths = np.concatenate(total_episode_lengths, axis=0)
-        total_success = {key: np.concatenate([success[key] for success in total_success], axis=0) for key in total_success[0].keys()}
+        total_success = None
         total_traj_uid = np.concatenate(total_traj_uid, axis=0)
 
         return total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid
@@ -611,7 +533,7 @@ class TrajectoryCollector:
             )
         else:
             # Vanilla Sampling   
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid = \
+            total_batch_list, total_episode_rewards, total_episode_lengths, total_traj_uid = \
                 self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 draft_rollout_wg=actor_rollout_wg["draft"],
@@ -628,10 +550,9 @@ class TrajectoryCollector:
             total_batch_list=total_batch_list,
             episode_rewards=total_episode_rewards,
             episode_lengths=total_episode_lengths,
-            success=total_success,
             traj_uid=total_traj_uid,
         )
         
-        logger.warning(f"Collected {len(gen_batch_output.batch['input_ids'])} trajectories. Gen_batch_output details: {gen_batch_output.batch.items()}, {gen_batch_output.non_tensor_batch.items()}")
+        # logger.warning(f"Collected {len(gen_batch_output.batch['input_ids'])} trajectories. Gen_batch_output details: {gen_batch_output.batch.items()}, {gen_batch_output.non_tensor_batch.items()}")
 
         return gen_batch_output

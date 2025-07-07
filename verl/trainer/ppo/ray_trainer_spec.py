@@ -60,7 +60,7 @@ from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seql
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
 from verl.workers.rollout.async_server import AsyncLLMServerManager
-from gigpo import core_gigpo
+from gigpo.spec_core_gigpo import compute_gigpo_outcome_advantage, compute_step_discounted_returns
 
 from agent_system.multi_turn_rollout.spec_rollout_loop import TrajectoryCollector
 from agent_system.multi_turn_rollout import adjust_batch
@@ -345,11 +345,11 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
     elif adv_estimator == AdvantageEstimator.GiGPO:
-        advantages, returns = core_gigpo.compute_gigpo_outcome_advantage(
+        advantages, returns = compute_gigpo_outcome_advantage(
             token_level_rewards=data.batch['token_level_rewards'], # for episode group reward computing
             step_rewards=data.batch['step_rewards'], # for step group reward computing
             response_mask=data.batch['response_mask'],
-            anchor_obs=data.non_tensor_batch['anchor_obs'],
+            # anchor_obs=data.non_tensor_batch['anchor_obs'],
             index=data.non_tensor_batch['uid'],
             traj_index=data.non_tensor_batch['traj_uid'],
             step_advantage_w=step_advantage_w,
@@ -430,6 +430,7 @@ class RayPPOTrainer:
         self.resource_pool_manager = resource_pool_manager
         self.use_reference_policy = Role.RefPolicy in role_worker_mapping
         self.use_rm = Role.RewardModel in role_worker_mapping
+        self.use_sft = Role.TargetRollout in role_worker_mapping
         self.ray_worker_group_cls = ray_worker_group_cls
         self.device_name = device_name
         self.validation_generations_logger = ValidationGenerationsLogger()
@@ -941,7 +942,7 @@ class RayPPOTrainer:
         max_actor_ckpt_to_keep = self.config.trainer.get("max_actor_ckpt_to_keep", None) if not remove_previous_ckpt_in_save else 1
         max_critic_ckpt_to_keep = self.config.trainer.get("max_critic_ckpt_to_keep", None) if not remove_previous_ckpt_in_save else 1
 
-        self.target_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep)
+        # self.target_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep)
         self.draft_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep)
 
         if self.use_critic:
@@ -996,7 +997,7 @@ class RayPPOTrainer:
         actor_path = os.path.join(global_step_folder, "actor")
         critic_path = os.path.join(global_step_folder, "critic")
         # load actor
-        self.target_rollout_wg.load_checkpoint(actor_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
+        # self.target_rollout_wg.load_checkpoint(actor_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
         self.draft_rollout_wg.load_checkpoint(actor_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
         # load critic
         if self.use_critic:
@@ -1049,7 +1050,7 @@ class RayPPOTrainer:
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.get("val_before_train", True):
+        if self.val_reward_fn is not None and self.config.trainer.get("val_before_train", False):
             val_metrics = self._validate()
             assert val_metrics, f"{val_metrics=}"
             pprint(f"Initial validation metrics: {val_metrics}")
@@ -1127,7 +1128,7 @@ class RayPPOTrainer:
                     batch = gen_batch_output
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.GiGPO:
-                        step_rewards_tensor = core_gigpo.compute_step_discounted_returns(
+                        step_rewards_tensor = compute_step_discounted_returns(
                             batch=batch,
                             gamma=self.config.algorithm.gamma
                         )
@@ -1267,7 +1268,29 @@ class RayPPOTrainer:
                         draft_output_metrics = reduce_metrics(draft_output.meta_info["metrics"])
                         metrics.update(draft_output_metrics)
 
-                    # Log rollout generations if enabled
+                    
+                    # SFT update using hard-batch
+                    # if self.use_sft:
+                    #     with _timer('sft_update_actor', timing_raw):
+                    #         sft_buffer_batch.to('cpu')
+                    #         sft_buffer_batch.batch.to('cpu')
+                    #         
+                    #         sft_train_batch = sft_buffer_batch
+                    #         
+                    #         # replace on-policy with off-policy
+                    #         self.replace_response_in_batch(sft_train_batch)
+                    #         
+                    #         if len(sft_buffer_batch) == sft_data_size:
+                    #             sft_buffer_batch = None
+                    #         else:
+                    #             sft_buffer_batch = sft_buffer_batch.slice(range(sft_data_size, len(sft_buffer_batch)))
+ # 
+                    #         self._balance_batch(sft_train_batch, metrics=metrics)
+                    #         sft_output = self.actor_rollout_wg.sft_update_actor(sft_train_batch)
+                    #         sft_output_metrics = reduce_metrics(sft_output.meta_info['metrics'])
+                    #         metrics.update(sft_output_metrics)
+
+                    #Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
                     if rollout_data_dir:
                         with _timer("dump_rollout_generations", timing_raw):

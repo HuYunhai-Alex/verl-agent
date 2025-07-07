@@ -26,9 +26,9 @@ data:
 actor_rollout_ref:
   hybrid_engine: True
   model:
-    path: Qwen/Qwen2.5-3B-Instruct
+    path: Qwen/Qwen2.5-1.5B-Instruct
     target_model_path: Qwen/Qwen2.5-3B-Instruct
-    draft_model_path: Qwen/Qwen2.5-3B-Instruct
+    draft_model_path: Qwen/Qwen2.5-1.5B-Instruct
     specialist_path: Qwen/Qwen2.5-3B-Instruct
     internist_path: Qwen/Qwen2.5-3B-Instruct
     use_shm: False
