@@ -107,7 +107,7 @@ class TaskRunner:
         global_pool_id = "global_pool"
         
         resource_pool_spec = {
-            global_pool_id: [1],
+            global_pool_id: [3],
             "target_pool": [1],
         }
         mapping = {

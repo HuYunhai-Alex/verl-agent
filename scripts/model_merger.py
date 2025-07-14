@@ -19,8 +19,8 @@ To merge FSDP checkpoints:
 ```sh
 python scripts/model_merger.py merge \
     --backend fsdp \
-    --local_dir checkpoints/verl_fsdp_gsm8k_examples/qwen2_5_0b5_fsdp_saveload/global_step_1/actor \
-    --target_dir /path/to/merged_hf_model
+    --local_dir /scratch/yh5961/RL-Spec/my-verl/checkpoints/verl_spec/gigpo_qwen_deepseek_7b_spec_reverse/global_step_66/actor \
+    --target_dir .
 ```
 
 To merge Megatron checkpoints:
@@ -165,6 +165,7 @@ class FSDPModelMerger(BaseModelMerger):
     def _get_world_size(self) -> int:
         """Extracts the FSDP world_size from checkpoint filenames (e.g., 'model_world_size_8_rank_0.pt')."""
         for filename in os.listdir(self.config.local_dir):
+            print(filename)
             match = re.match(r"model_world_size_(\d+)_rank_0\.pt", filename)
             if match:
                 return int(match.group(1))

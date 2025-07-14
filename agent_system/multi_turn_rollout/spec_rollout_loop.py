@@ -259,7 +259,7 @@ class TrajectoryCollector:
             for j in range(sequence_length):
                 r = random.random()
                 # logger.warning(f"r is {r}, Draft log prob: {draft_log_probs.batch[i].get('old_log_probs', [])[j]}, Target ref log prob: {target_log_probs.batch[i].get('ref_log_prob', [])[j]}")
-                if torch.log(torch.tensor(r)) <= draft_log_probs.batch[i].get("old_log_probs", [])[j] - (target_log_probs.batch[i].get("ref_log_prob", [])[j] + 1e-8):
+                if torch.log(torch.tensor(r)) <= (draft_log_probs.batch[i].get("old_log_probs", [])[j] - target_log_probs.batch[i].get("ref_log_prob", [])[j] + 1e-8):
                     accept += 1
                     if batch.batch["responses"][i][j] == self.tokenizer.eos_token_id:
                         logger.warning(f"Accepting token {j} for batch {i} with EOS token.")
